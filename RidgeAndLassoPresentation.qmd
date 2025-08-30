@@ -1,0 +1,918 @@
+---
+title: "STA199: Ridge and Lasso"
+author: "C. L."
+format: revealjs
+toc: true
+editor: visual
+execute:
+  echo: true
+  cache: true
+---
+
+```{r include=FALSE}
+library(glmnet)
+library(foreach)
+library(doParallel)
+library(knitr)
+library(glmnetcr)
+```
+
+## Why Ridge and Lasso?
+
+-   Ridge and Lasso regression both aim to improve upon standard linear regression with the goal of producing a model that has less variance in exchange for more bias.
+-   Both are also effective for correcting for multicollinearity.
+    -   In practice, ridge and lasso introduce a "shrinkage penalty" to the loss function (RSS) which applies more to larger coefficients, and less to smaller coefficients, shrinking some coefficients close or equal to 0. The shrinkage penalty does not apply to $\beta_0$.
+
+------------------------------------------------------------------------
+
+-   Ridge and lasso are tuned by adjusting $\lambda$ (shrinkage penalty) with cross-validation; at $\lambda=0$, the regression is equivalent to LSE. At $\lambda=\inf$, the predictors are 0. Increasing lambda = less flexibility = less variance, but more bias.
+-   This process can not only reduce the complexity of extremely large models (think 1000+ parameters), but it can also be a suitable alternative to LOOCV or other selection methods which become impractical at large parameter counts.
+-   *Multiplying a predictor by a constant can change coefficient estimates substantially when using ridge/lasso.*
+
+------------------------------------------------------------------------
+
+-   When considering the linear algebra model of Linear Regression, $x^Tx$ is the source of variation in a model.
+-   When $x^Tx$ is small (i.e. there are more predictors (p) than data-points (n)), it may become ill-conditioned and difficult to solve.
+-   By using ridge/lasso, one is adding to the diagonal elements of $x^Tx$ (regularization), making the off diagonals less important. This helps to make p \> n solvable.
+
+------------------------------------------------------------------------
+
+Essentially, the process for either is as follows (ISLR 6.2.3):
+
+-   **Standardize the data, if required (subtract x by mean, and divide by standard deviation)**
+-   Define a set of $\lambda$ to test
+-   Perform LOOCV for each $\lambda$
+-   Choose the $\lambda$ that picks the lowest LOOCV value (i.e. residual)
+-   Refit the model using all of the available observations, and the selected tuning parameter.
+
+## Ridge
+
+Minimize $\Sigma_{i=1}^n{(y_i-\beta_0-\Sigma_{j=1}^p{\beta_jx_{ij}})^2}+\lambda\Sigma_{j=1}^p{\beta_j^2}=RSS+\lambda\Sigma_{j=1}^p\beta_j^2$
+
+-   One defining characteristic of ridge regression is that all predictors (p) are used; none will be exactly 0. This may cause problems when p is very large.
+-   Use `glmnet(x_mat, y_mat, alpha = 0)`
+
+## Lasso
+
+Minimize $\Sigma_{i=1}^n(y_i-\beta_0-\sigma_{j=1}^p\beta_jx_{ij})^2 + \lambda\Sigma_{j=1}^p|\beta_j| = RSS + \lambda\Sigma_{j=1}^p|\beta_j|$
+
+-   Like ridge regression, but some parameters go to exactly 0.
+-   Slightly higher variance than ridge.
+-   In theory, lasso can provide a more sparse model than ridge, but this does not necessarily mean more interpretable results on actual data.
+    -   Actual data often cannot be explained with an overly sparse model.
+-   use `glmnet(x_mat, y_mat, alpha = 1)`
+
+## Theoretical Example: (p = n, p \< n, p \> n)
+
+### p = n
+
+In this scenario, there are the same amount of predictors as datapoints. What happens when running ridge / lasso?
+
+```{r}
+cl <- makeCluster(12)
+registerDoParallel(cl)
+
+# Set up parallelized LOOCV for the huge dataset (ridge)
+cv_ridge_parallel <- function(dataset, selected_lambda) {
+  
+  #for (i in 1:nrow(dataset)) {
+  cv_total <- list()
+  cv_total <- foreach(i = 1 : nrow(dataset), .packages = 'glmnet') %dopar% {
+    test_row <- dataset[i,]
+    test_row_x <- test_row[2:1001]
+    test_row_y <- test_row[1]
+    
+    train_rows <- dataset[-i,]
+    train_rows_x <- train_rows[,2:1001]
+    train_rows_y <- train_rows[,1]
+    
+    # Train gaussian model
+    single_model_ridge <- glmnet(x = as.matrix(train_rows_x), y = train_rows_y, alpha = 0, lambda = selected_lambda, family = "gaussian")
+    # Test the model
+    predict_result <- predict(single_model_ridge, newx = test_row_x)
+    # Calculate RSS
+    rss <- (test_row_y - predict_result) ** 2
+    return(rss)
+    #cv_total[i] = rss
+  }
+  stopifnot(length(cv_total)== nrow(data_multi))
+  return (cv_total)
+}
+
+# lasso
+cv_lasso_parallel <- function(dataset, selected_lambda) {
+  
+  #for (i in 1:nrow(dataset)) {
+  cv_total <- list()
+  cv_total <- foreach(i = 1 : nrow(dataset), .packages = 'glmnet') %dopar% {
+    test_row <- dataset[i,]
+    test_row_x <- test_row[2:1001]
+    test_row_y <- test_row[1]
+    
+    train_rows <- dataset[-i,]
+    train_rows_x <- train_rows[,2:1001]
+    train_rows_y <- train_rows[,1]
+    
+    # Train gaussian model
+    single_model_lasso <- glmnet(x = as.matrix(train_rows_x), y = train_rows_y, alpha = 1, lambda = selected_lambda, family = "gaussian")
+    # Test the model
+    predict_result <- predict(single_model_lasso, newx = test_row_x)
+    # Calculate RSS
+    rss <- (test_row_y - predict_result) ** 2
+    return(rss)
+    #cv_total[i] = rss
+  }
+  stopifnot(length(cv_total)== nrow(data_multi))
+  return (cv_total)
+}
+
+
+# No standardization necessary, since data is from a std. normal distribution.
+library(MASS)
+library(tidyverse)
+set.seed(199)
+# Generate correlated data from multivariate normal distribution
+# Modified from STA108 lecture
+means <- rep(0, 1001)
+Sigma <- matrix(0, nrow = 1001, ncol = 1001)
+correlation <- 0.7 # assume correlation is 0.7
+diag(Sigma) <- 1.0 # set diagonals of Sigma to 1.
+
+# set everything else to 0.7
+for (i in 1:nrow(Sigma)) {
+  for (j in 1:ncol(Sigma)) {
+    if (i != j) {
+      Sigma[i,j] = 0.7
+    }
+  }
+}
+
+data_multi <- mvrnorm(1000,means,Sigma)
+# First col of data_multi is y, the remaining are xs.
+
+# Step 2: Try lambdas
+lambdas <- c(0, 0.0005, 0.005, 0.05, 0.5, 1, 5, 10, 15)
+
+# Step 3: Perform LOOCV
+results <- data_frame(Lambda = numeric(), CV_ridge = numeric(), CV_lasso=numeric())
+for (curr_lambda in lambdas) {
+  # cross_validation_total <- c()
+  # cross_validation_total <- c(cross_validation_total, 
+  #                             clusterApply(cl = clusterOfThreads,
+  #                                          x = data_multi,
+  #                                          fun = cv_ridge_parallel)
+  #                           )
+  cv_total_for_lambda_ridge <- cv_ridge_parallel(data_multi, curr_lambda)
+  cv_total_for_lambda_lasso <- cv_lasso_parallel(data_multi, curr_lambda)
+  
+  results <- results %>% add_row(Lambda = curr_lambda, CV_ridge = sum(unlist(cv_total_for_lambda_ridge)) / nrow(data_multi), CV_lasso = sum(unlist(cv_total_for_lambda_lasso)) / nrow(data_multi))
+}
+stopCluster(cl)
+
+```
+
+------------------------------------------------------------------------
+
+```{r}
+kable(results)
+```
+
+---
+
+```{r}
+ggplot(data = results, aes(x = lambdas, y = CV_ridge)) +
+  geom_point() + geom_text(aes(label = round(CV_ridge,4), vjust = 1.5, hjust = 0.5)) + xlab("Lambda") + ggtitle("CV vs Lambda (Ridge)")
+```
+
+----
+
+```{r}
+ggplot(data = results, aes(x = lambdas, y = CV_lasso)) +
+  geom_point() + geom_text(aes(label = round(CV_lasso,4), vjust = 1.5, hjust = 0.5)) + xlab("Lambda") + ggtitle("CV vs Lambda (Lasso)")
+```
+
+---
+
+```{r}
+
+
+
+
+
+x <- data_multi[,2:1001]
+y <- data_multi[,1]
+final_model_ridge <- glmnet(x = x, y = y, alpha = 0, lambda = 10, family = "gaussian")
+final_model_ridge$dev.ratio
+
+final_model_lasso <- glmnet(x = x, y = y, alpha = 1, lambda = 0.05, family = "gaussian")
+final_model_lasso$dev.ratio
+
+data_multi_df <- as.data.frame(data_multi)
+final_model_lm <- lm(V1 ~ . , data = data_multi_df)
+```
+
+---
+
+Since we see that a lambda value of 10 is best for ridge and a lambda value of 0.005 is best for lasso, we train the final models on those. Although this lambda does not minimize R\^2 (which always increases with parameter count) as shown in a glmnet() call, it should be noted that LOOCV helps to prevent overfit, so it is the better metric to consider.
+
+---
+
+```{r}
+summary(final_model_lm) 
+```
+
+In this case, when p = n, lm() stops working entirely!
+
+---
+
+### p < n
+
+```{r}
+cl <- makeCluster(12)
+registerDoParallel(cl)
+
+# Set up parallelized LOOCV for the huge dataset (ridge)
+cv_ridge_parallel <- function(dataset, selected_lambda) {
+  
+  #for (i in 1:nrow(dataset)) {
+  cv_total <- list()
+  cv_total <- foreach(i = 1 : nrow(dataset), .packages = 'glmnet') %dopar% {
+    test_row <- dataset[i,]
+    test_row_x <- test_row[2:501]
+    test_row_y <- test_row[1]
+    
+    train_rows <- dataset[-i,]
+    train_rows_x <- train_rows[,2:501]
+    train_rows_y <- train_rows[,1]
+    
+    # Train gaussian model
+    single_model_ridge <- glmnet(x = as.matrix(train_rows_x), y = train_rows_y, alpha = 0, lambda = selected_lambda, family = "gaussian")
+    # Test the model
+    predict_result <- predict(single_model_ridge, newx = test_row_x)
+    # Calculate RSS
+    rss <- (test_row_y - predict_result) ** 2
+    return(rss)
+    #cv_total[i] = rss
+  }
+  stopifnot(length(cv_total)== nrow(data_multi))
+  return (cv_total)
+}
+
+# lasso
+cv_lasso_parallel <- function(dataset, selected_lambda) {
+  
+  #for (i in 1:nrow(dataset)) {
+  cv_total <- list()
+  cv_total <- foreach(i = 1 : nrow(dataset), .packages = 'glmnet') %dopar% {
+    test_row <- dataset[i,]
+    test_row_x <- test_row[2:501]
+    test_row_y <- test_row[1]
+    
+    train_rows <- dataset[-i,]
+    train_rows_x <- train_rows[,2:501]
+    train_rows_y <- train_rows[,1]
+    
+    # Train gaussian model
+    single_model_lasso <- glmnet(x = as.matrix(train_rows_x), y = train_rows_y, alpha = 1, lambda = selected_lambda, family = "gaussian")
+    # Test the model
+    predict_result <- predict(single_model_lasso, newx = test_row_x)
+    # Calculate RSS
+    rss <- (test_row_y - predict_result) ** 2
+    return(rss)
+    #cv_total[i] = rss
+  }
+  stopifnot(length(cv_total)== nrow(data_multi))
+  return (cv_total)
+}
+
+
+# No standardization necessary, since data is from a std. normal distribution.
+library(MASS)
+library(tidyverse)
+set.seed(199)
+# Generate correlated data from multivariate normal distribution
+# Modified from STA108 lecture
+means <- rep(0, 501)
+Sigma <- matrix(0, nrow = 501, ncol = 501)
+correlation <- 0.7 # assume correlation is 0.7
+diag(Sigma) <- 1.0 # set diagonals of Sigma to 1.
+
+# set everything else to 0.7
+for (i in 1:nrow(Sigma)) {
+  for (j in 1:ncol(Sigma)) {
+    if (i != j) {
+      Sigma[i,j] = 0.7
+    }
+  }
+}
+
+data_multi <- mvrnorm(1000,means,Sigma)
+# First col of data_multi is y, the remaining are xs.
+
+# Step 2: Try lambdas
+lambdas <- c(0, 0.00005, 0.0005, 0.005, 0.05, 0.5, 1, 5, 10, 15)
+
+# Step 3: Perform LOOCV
+results <- data_frame(Lambda = numeric(), CV_ridge = numeric(), CV_lasso=numeric())
+for (curr_lambda in lambdas) {
+  # cross_validation_total <- c()
+  # cross_validation_total <- c(cross_validation_total, 
+  #                             clusterApply(cl = clusterOfThreads,
+  #                                          x = data_multi,
+  #                                          fun = cv_ridge_parallel)
+  #                           )
+  cv_total_for_lambda_ridge <- cv_ridge_parallel(data_multi, curr_lambda)
+  cv_total_for_lambda_lasso <- cv_lasso_parallel(data_multi, curr_lambda)
+  
+  results <- results %>% add_row(Lambda = curr_lambda, CV_ridge = sum(unlist(cv_total_for_lambda_ridge)) / nrow(data_multi), CV_lasso = sum(unlist(cv_total_for_lambda_lasso)) / nrow(data_multi))
+}
+stopCluster(cl)
+```
+
+------------------------------------------------------------------------
+
+```{r}
+kable(results)
+```
+
+---
+
+```{r}
+ggplot(data = results, aes(x = lambdas, y = CV_ridge)) +
+  geom_point() + geom_text(aes(label = round(CV_ridge,4), vjust = 1.5, hjust = 0.5)) + xlab("Lambda") + ggtitle("CV vs Lambda (Ridge)")
+```
+
+---
+
+```{r}
+ggplot(data = results, aes(x = lambdas, y = CV_lasso)) +
+  geom_point() + geom_text(aes(label = round(CV_lasso,4), vjust = 1.5, hjust = 0.5)) + xlab("Lambda") + ggtitle("CV vs Lambda (Lasso)")
+```
+
+---
+
+```{r}
+
+
+
+
+
+
+
+
+x <- data_multi[,2:501]
+y <- data_multi[,1]
+final_model_ridge <- glmnet(x = x, y = y, alpha = 0, lambda = 10, family = "gaussian")
+final_model_ridge$dev.ratio
+
+final_model_lasso <- glmnet(x = x, y = y, alpha = 1, lambda = 0.05, family = "gaussian")
+final_model_lasso$dev.ratio
+
+data_multi_df <- as.data.frame(data_multi)
+final_model_lm <- lm(V1 ~ . , data = data_multi_df)
+```
+
+---
+
+```{r}
+summary(final_model_lm)
+coef(final_model_lm)
+coef(final_model_lasso)
+coef(final_model_ridge)
+```
+
+---
+
+When p \< n, a linear model is able to be created, with an R\^2 superior to ridge/lasso. However, it is clear that some variables have an t-statistic with a p-value above 0.05. In comparison, both ridge and lasso have shrunk many of the variables either close or equal to 0.
+
+---
+
+### p > n
+
+```{r}
+cl <- makeCluster(12)
+registerDoParallel(cl)
+
+# Set up parallelized LOOCV for the huge dataset (ridge)
+cv_ridge_parallel <- function(dataset, selected_lambda) {
+  
+  #for (i in 1:nrow(dataset)) {
+  cv_total <- list()
+  cv_total <- foreach(i = 1 : nrow(dataset), .packages = 'glmnet') %dopar% {
+    test_row <- dataset[i,]
+    test_row_x <- test_row[2:1001]
+    test_row_y <- test_row[1]
+    
+    train_rows <- dataset[-i,]
+    train_rows_x <- train_rows[,2:1001]
+    train_rows_y <- train_rows[,1]
+    
+    # Train gaussian model
+    single_model_ridge <- glmnet(x = as.matrix(train_rows_x), y = train_rows_y, alpha = 0, lambda = selected_lambda, family = "gaussian")
+    # Test the model
+    predict_result <- predict(single_model_ridge, newx = test_row_x)
+    # Calculate RSS
+    rss <- (test_row_y - predict_result) ** 2
+    return(rss)
+    #cv_total[i] = rss
+  }
+  stopifnot(length(cv_total)== nrow(data_multi))
+  return (cv_total)
+}
+
+# lasso
+cv_lasso_parallel <- function(dataset, selected_lambda) {
+  
+  #for (i in 1:nrow(dataset)) {
+  cv_total <- list()
+  cv_total <- foreach(i = 1 : nrow(dataset), .packages = 'glmnet') %dopar% {
+    test_row <- dataset[i,]
+    test_row_x <- test_row[2:1001]
+    test_row_y <- test_row[1]
+    
+    train_rows <- dataset[-i,]
+    train_rows_x <- train_rows[,2:1001]
+    train_rows_y <- train_rows[,1]
+    
+    # Train gaussian model
+    single_model_lasso <- glmnet(x = as.matrix(train_rows_x), y = train_rows_y, alpha = 1, lambda = selected_lambda, family = "gaussian")
+    # Test the model
+    predict_result <- predict(single_model_lasso, newx = test_row_x)
+    # Calculate RSS
+    rss <- (test_row_y - predict_result) ** 2
+    return(rss)
+    #cv_total[i] = rss
+  }
+  stopifnot(length(cv_total)== nrow(data_multi))
+  return (cv_total)
+}
+
+
+# No standardization necessary, since data is from a std. normal distribution.
+library(MASS)
+library(tidyverse)
+set.seed(199)
+# Generate correlated data from multivariate normal distribution
+# Modified from STA108 lecture
+means <- rep(0, 1001)
+Sigma <- matrix(0, nrow = 1001, ncol = 1001)
+correlation <- 0.7 # assume correlation is 0.7
+diag(Sigma) <- 1.0 # set diagonals of Sigma to 1.
+
+# set everything else to 0.7
+for (i in 1:nrow(Sigma)) {
+  for (j in 1:ncol(Sigma)) {
+    if (i != j) {
+      Sigma[i,j] = 0.7
+    }
+  }
+}
+
+data_multi <- mvrnorm(500,means,Sigma)
+# First col of data_multi is y, the remaining are xs.
+
+# Step 2: Try lambdas
+lambdas <- c(0, 0.00005, 0.0005, 0.005, 0.05, 0.5, 1, 5, 10, 15)
+
+# Step 3: Perform LOOCV
+results <- data_frame(Lambda = numeric(), CV_ridge = numeric(), CV_lasso=numeric())
+for (curr_lambda in lambdas) {
+  # cross_validation_total <- c()
+  # cross_validation_total <- c(cross_validation_total, 
+  #                             clusterApply(cl = clusterOfThreads,
+  #                                          x = data_multi,
+  #                                          fun = cv_ridge_parallel)
+  #                           )
+  cv_total_for_lambda_ridge <- cv_ridge_parallel(data_multi, curr_lambda)
+  cv_total_for_lambda_lasso <- cv_lasso_parallel(data_multi, curr_lambda)
+  
+  results <- results %>% add_row(Lambda = curr_lambda, CV_ridge = sum(unlist(cv_total_for_lambda_ridge)) / nrow(data_multi), CV_lasso = sum(unlist(cv_total_for_lambda_lasso)) / nrow(data_multi))
+}
+stopCluster(cl)
+```
+
+------------------------------------------------------------------------
+
+```{r}
+kable(results)
+```
+
+----
+
+```{r}
+ggplot(data = results, aes(x = lambdas, y = CV_ridge)) +
+  geom_point() + geom_text(aes(label = round(CV_ridge,4), vjust = 1.5, hjust = 0.5)) + xlab("Lambda") + ggtitle("CV vs Lambda (Ridge)")
+```
+
+----
+
+```{r}
+ggplot(data = results, aes(x = lambdas, y = CV_lasso)) +
+  geom_point() + geom_text(aes(label = round(CV_lasso,4), vjust = 1.5, hjust = 0.5)) + xlab("Lambda") + ggtitle("CV vs Lambda (Lasso)")
+```
+
+---
+
+```{r}
+
+
+
+
+
+
+x <- data_multi[,2:501]
+y <- data_multi[,1]
+final_model_ridge <- glmnet(x = x, y = y, alpha = 0, lambda = 15, family = "gaussian")
+final_model_ridge$dev.ratio
+
+final_model_lasso <- glmnet(x = x, y = y, alpha = 1, lambda = 0.05, family = "gaussian")
+final_model_lasso$dev.ratio
+
+data_multi_df <- as.data.frame(data_multi)
+final_model_lm <- lm(V1 ~ . , data = data_multi_df)
+```
+
+---
+
+```{r}
+summary(final_model_lm)
+coef(final_model_lm)
+coef(final_model_lasso)
+coef(final_model_ridge)
+```
+
+---
+
+Like with p = n, lm() fails to function, while ridge and lasso still produce models with very adequate R\^2 (\~70%, not adjusted). In addition, following the principle of parsimony, lasso is an excellent choice, as it has eliminated the majority of the unneccessary parameters.
+
+## Practical applications of Ridge and Lasso to Credit data (ISLRv2) with LOOCV
+
+The ISLRv2 textbook includes the Credit dataset which is used to run a ridge and lasso regression. We can use glmnet and LOOCV to train a ridge and then a lasso model following the process.
+
+```{r}
+library(ISLR2)
+# Balance is our Y, everything else is X.
+credit_cleaned <- data_frame(Credit)
+head(credit_cleaned)
+```
+
+------------------------------------------------------------------------
+
+### Ridge
+
+Step 1: Standardize the data (and convert categoricals to dummies, since glmnet() doesn't work with factor)
+
+```{r}
+library(fastDummies)
+credit_cleaned <- credit_cleaned %>%
+  # Don't standardize categoricals / response.
+  select(-Balance, -Own, -Student, -Married, -Region) %>%
+  mutate(across(everything(), scale)) %>%
+  mutate(Balance = Credit$Balance, Own = Credit$Own, Student = Credit$Student, Married = Credit$Married, Region = Credit$Region) %>%
+  dummy_cols()
+head(credit_cleaned)
+```
+
+------------------------------------------------------------------------
+
+Step 2: Define a set of $\lambda$ to test.
+
+```{r}
+lambdas <- c(1e-05, 1e-04, 1e-03, 1e-02, 1e-01, 0, 1e+01, 1e+02, 1e+03, 1e+04, 1e+05)
+```
+
+------------------------------------------------------------------------
+
+Step 3: Perform LOOCV for each lambda (train/test)
+
+```{r}
+library(glmnet)
+results <- data_frame(Lambda = numeric(), CV = numeric())
+for (curr_lambda in lambdas) {
+  cross_validation_total <- c()
+  
+  for (i in 1:nrow(credit_cleaned)) {
+    test_row <- credit_cleaned[i,]
+    test_row_x <- test_row[,!names(test_row) %in% c("Balance")]
+    test_row_y <- test_row[,names(test_row) %in% c("Balance")]
+    
+    train_rows <- credit_cleaned[-i,]
+    train_rows_x <- train_rows[,!names(train_rows) %in% c("Balance")]
+    train_rows_y <- train_rows[,names(train_rows) %in% c("Balance")]
+    
+    # Train gaussian model
+    single_model_ridge <- glmnet(x = train_rows_x, y = pull(train_rows_y), alpha = 0, lambda = curr_lambda, family = "gaussian")
+    # Test the model
+    predict_result <- predict(single_model_ridge, newx = test_row_x)
+    # Calculate RSS
+    rss <- (pull(test_row_y) - predict_result) ** 2
+    cross_validation_total <- c(cross_validation_total, rss)
+  }
+  
+  stopifnot(length(cross_validation_total)== nrow(credit_cleaned))
+  results <- results %>% add_row(Lambda = curr_lambda, CV = sum(cross_validation_total) / nrow(credit_cleaned))
+}
+```
+
+------------------------------------------------------------------------
+
+Step 4: Choose the $\lambda$ that picks the lowest LOOCV value (i.e. residual)
+
+```{r}
+results_log10 <- results %>% mutate(Lambda = ifelse(Lambda != 0, log10(Lambda), Lambda))
+ggplot(data = results_log10, aes(x = Lambda, y = CV)) +
+  geom_point() + scale_y_log10() + geom_text(aes(label = round(CV), vjust = 1.5, hjust = 0.5)) + xlab("Lambda (log_10)")
+```
+
+Since a lambda of 0.1 is best in terms of CV, we pick that lambda.
+
+------------------------------------------------------------------------
+
+Step 5: Refit the model using all of the available observations, and the selected tuning parameter.
+
+```{r}
+credit_cleaned_x <- credit_cleaned %>% select(-c(Balance))
+credit_cleaned_y <- pull(credit_cleaned %>% select(c(Balance)))
+final_model <- glmnet(x = credit_cleaned_x, y = credit_cleaned_y, alpha = 0, lambda = 0.1, family = "gaussian")
+```
+
+------------------------------------------------------------------------
+
+```{r, include = FALSE}
+credit_cleaned_lm <- credit_cleaned %>%
+  # Don't standardize categoricals / response.
+  select(-Balance, -Own, -Student, -Married, -Region) %>%
+  mutate(across(everything(), scale)) %>%
+  mutate(Balance = Credit$Balance, Own = Credit$Own, Student = Credit$Student, Married = Credit$Married, Region = Credit$Region)
+linear_reg <- lm(data = credit_cleaned_lm, formula = Balance ~ .)
+```
+
+```{r}
+print(coef(linear_reg))
+```
+
+```{r}
+print(coef(final_model))
+```
+
+------------------------------------------------------------------------
+
+```{r}
+print(summary(linear_reg)$adj.r.squared)
+final_model_ridge_r2 <- 1 - ((1 - final_model$dev.ratio)*(nrow(credit_cleaned) - 1)/ (nrow(credit_cleaned) - ncol(credit_cleaned_x) - 1))
+print(final_model_ridge_r2)
+```
+
+We can compare the $R^2$ values of both models; they are more or less identical in this scenario (which is reasonable, given that it appears a more aggressive penalty actually raises variance (RSS) for this scenario), which means ridge has minimal effect.
+
+Next, we can try lasso regression with a similar setup:
+
+------------------------------------------------------------------------
+
+### Lasso
+
+Step 1, 2, 3:
+
+```{r}
+library(glmnet)
+results <- data_frame(Lambda = numeric(), CV = numeric())
+for (curr_lambda in lambdas) {
+  cross_validation_total <- c()
+  
+  for (i in 1:nrow(credit_cleaned)) {
+    test_row <- credit_cleaned[i,]
+    test_row_x <- test_row[,!names(test_row) %in% c("Balance")]
+    test_row_y <- test_row[,names(test_row) %in% c("Balance")]
+    
+    train_rows <- credit_cleaned[-i,]
+    train_rows_x <- train_rows[,!names(train_rows) %in% c("Balance")]
+    train_rows_y <- train_rows[,names(train_rows) %in% c("Balance")]
+    
+    # Train gaussian model
+    single_model_lasso <- glmnet(x = train_rows_x, y = pull(train_rows_y), alpha = 1, lambda = curr_lambda, family = "gaussian")
+    # Test the model
+    predict_result <- predict(single_model_lasso, newx = test_row_x)
+    # Calculate RSS
+    rss <- (pull(test_row_y) - predict_result) ** 2
+    cross_validation_total <- c(cross_validation_total, rss)
+  }
+  
+  stopifnot(length(cross_validation_total)== nrow(credit_cleaned))
+  results <- results %>% add_row(Lambda = curr_lambda, CV = sum(cross_validation_total) / nrow(credit_cleaned))
+}
+```
+
+------------------------------------------------------------------------
+
+Step 4: Choose lambda
+
+```{r}
+results_log10 <- results %>% mutate(Lambda = ifelse(Lambda != 0, log10(Lambda), Lambda))
+ggplot(data = results_log10, aes(x = Lambda, y = CV)) +
+  geom_point() + scale_y_log10() + geom_text(aes(label = round(CV), vjust = 1.5, hjust = 0.5)) + xlab("Lambda (log_10)")
+```
+
+It seems 0.1 is the best option for lasso.
+
+------------------------------------------------------------------------
+
+Step 5: Refit
+
+```{r}
+credit_cleaned_x <- credit_cleaned %>% select(-c(Balance))
+credit_cleaned_y <- pull(credit_cleaned %>% select(c(Balance)))
+final_model_lasso <- glmnet(x = credit_cleaned_x, y = credit_cleaned_y, alpha = 1, lambda = 10e-02, family = "gaussian")
+```
+
+------------------------------------------------------------------------
+
+```{r}
+print(coef(linear_reg))
+print(coef(final_model_lasso))
+```
+
+As listed by the coefficients, some variables are completely shrunk to 0.
+
+------------------------------------------------------------------------
+
+```{r}
+print(summary(linear_reg)$adj.r.squared)
+final_model_lasso_r2 <- 1 - ((1 - final_model_lasso$dev.ratio)*(nrow(credit_cleaned) - 1)/ (nrow(credit_cleaned) - ncol(credit_cleaned_x) - 1))
+print(final_model_lasso_r2)
+```
+
+Similar result to ridge regression.
+
+## Practical application of Ridge and Lasso to a real dataset (wine)
+
+UC Irvine provides a repository of various machine learning datasets. We will use https://archive.ics.uci.edu/dataset/186/wine+quality for testing ridge and lasso. The regression will focus on the red wine set.
+
+```{r}
+library(readr)
+winequality_red <- read_delim("winequality-red.csv", 
+    delim = ";", escape_double = FALSE, trim_ws = TRUE) %>%
+  mutate(quality = as_factor(quality))
+```
+
+---
+
+Starting with a standard ordered logistic model (polr):
+
+```{r}
+wine_lm <- step(polr(quality ~ ., data = winequality_red, Hess = TRUE))
+```
+
+---
+
+There does not seem to be an analog for R^2 when performing ordered logistic regression.
+
+---
+
+### Ridge and Lasso
+
+```{r}
+# NOTE: This function was modified from previous sections; CV is not a good indicator for ordinal logistic regression, since it is not possible to calculate RSS. Instead, treat the CV value as the mean correct classification.
+cl <- makeCluster(12)
+registerDoParallel(cl)
+
+# Set up parallelized LOOCV for the huge dataset (ridge)
+cv_ridge_parallel <- function(dataset, selected_lambda) {
+  
+  cv_total <- list()
+  cv_total <- foreach(i = 1 : nrow(dataset), .packages = c('glmnetcr','tidyverse')) %dopar% {
+    
+    test_row <- dataset %>% filter(row_number() == i)
+    test_row_x <- test_row %>% select(-c(quality))
+    test_row_y <- test_row %>% select(c(quality))
+    
+    train_rows <- dataset %>% filter(row_number() != i)
+    train_rows_x <- train_rows %>% select(-c(quality))
+    train_rows_y <- train_rows %>% select(c(quality))
+    
+    # Train gaussian model
+    single_model_ridge <- glmnetcr(x = as.matrix(train_rows_x), y = pull(train_rows_y), alpha = 0, lambda = selected_lambda, pmax = 99)
+    # Test the model
+    predict_result <- predict(single_model_ridge, newx = as.matrix(test_row_x))
+    # Calculate RSS
+    rss <- ifelse(pull(test_row_y) == as.factor(predict_result$class), 1, 0)
+    return(rss)
+    #cv_total[i] = rss
+  }
+  stopifnot(length(cv_total)== nrow(winequality_red))
+  return (cv_total)
+}
+
+# lasso
+cv_lasso_parallel <- function(dataset, selected_lambda) {
+  
+  #for (i in 1:nrow(dataset)) {
+  cv_total <- list()
+  cv_total <- foreach(i = 1 : nrow(dataset), .packages = c('glmnetcr', 'tidyverse')) %dopar% {
+    test_row <- dataset %>% filter(row_number() == i)
+    test_row_x <- test_row %>% select(-c(quality))
+    test_row_y <- test_row %>% select(c(quality))
+    
+    train_rows <- dataset %>% filter(row_number() != i)
+    train_rows_x <- train_rows %>% select(-c(quality))
+    train_rows_y <- train_rows %>% select(c(quality))
+    
+    # Train gaussian model
+    single_model_lasso <- glmnetcr(x = as.matrix(train_rows_x), y = pull(train_rows_y), alpha = 1, lambda = selected_lambda)
+    # Test the model
+    predict_result <- predict(single_model_lasso, newx = as.matrix(test_row_x))
+    # Calculate RSS
+    rss <- ifelse(pull(test_row_y) == as.factor(predict_result$class), 1, 0)
+    return(rss)
+    #cv_total[i] = rss
+  }
+  stopifnot(length(cv_total)== nrow(winequality_red))
+  return (cv_total)
+}
+
+# Step 1: Standardize red wine dataset
+winequality_red_cleaned <- winequality_red %>%
+  select(-quality) %>%
+  mutate(across(everything(), scale)) %>%
+  mutate(quality = winequality_red$quality)
+  
+
+# Step 2: Define lambdas
+lambdas_lasso <- c(0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06)
+lambdas_ridge <- c(0, 5, 10, 15, 20, 25, 30)
+
+# Step 3: Perform LOOCV for each lambda (train/test)
+results <- data_frame(Lambda_Ridge = numeric(), Lambda_Lasso = numeric(), Mean_Accuracy_Ridge = numeric(), Mean_Accuracy_Lasso=numeric())
+for (i in 1 : length(lambdas_lasso)) {
+#for (curr_lambda in lambdas) {
+  cv_total_for_lambda_ridge <- cv_ridge_parallel(winequality_red, lambdas_ridge[i])
+  cv_total_for_lambda_lasso <- cv_lasso_parallel(winequality_red, lambdas_lasso[i])
+  
+  results <- results %>% add_row(Lambda_Ridge = lambdas_ridge[i], Lambda_Lasso = lambdas_lasso[i], Mean_Accuracy_Ridge = sum(unlist(cv_total_for_lambda_ridge)) / nrow(winequality_red), Mean_Accuracy_Lasso = sum(unlist(cv_total_for_lambda_lasso)) / nrow(winequality_red))
+}
+stopCluster(cl)
+```
+
+---
+
+```{r}
+kable(results)
+```
+
+----
+
+```{r}
+ggplot(data = results, aes(x = Lambda_Ridge, y = Mean_Accuracy_Ridge)) +
+  geom_point() + geom_text(aes(label = round(Mean_Accuracy_Ridge,6), vjust = 1.5, hjust = 0.5)) + xlab("Lambda") + ggtitle("Mean Accuracy vs Lambda (Ridge)")
+```
+
+---
+
+```{r}
+ggplot(data = results, aes(x = Lambda_Lasso, y = Mean_Accuracy_Lasso)) +
+  geom_point() + geom_text(aes(label = round(Mean_Accuracy_Lasso,4), vjust = 1.5, hjust = 0.5)) + xlab("Lambda") + ggtitle("CV vs Lambda (Lasso)")
+```
+
+----
+
+
+```{r}
+x <- winequality_red_cleaned %>% select(-c(quality))
+y <- winequality_red_cleaned %>% select(quality)
+final_model_ridge <- glmnetcr(x = x, y = pull(y), alpha = 0, lambda = 0, pmax = 99)
+
+final_model_lasso <- glmnetcr(x = x, y = pull(y), alpha = 1, lambda = 0.01)
+
+print(summary(final_model_ridge))
+print(summary(final_model_lasso))
+```
+
+----
+
+We can attempt to compare deviance ratios, which compares the deviance of the ordinal logistic model to their null models. 
+
+```{r include = FALSE}
+null_model <- polr(quality ~ 1, data = winequality_red, Hess = TRUE);
+null_deviance <- deviance(null_model)
+model_deviance <- deviance(wine_lm)
+```
+
+Curiously, it seems that lasso and ridge both perform better than the standard ordinal logistic regression.
+
+```{r}
+print(1 - (model_deviance / null_deviance))
+print(final_model_ridge$dev.ratio)
+print(final_model_lasso$dev.ratio)
+```
+
+----
+
+The original research regarding the wine quality includes some metrics regarding their own models:
+
+![](Pasted image.png)
+
+Cortez, Paulo, et al. "Wine Quality." UCI Machine Learning Repository, 2009, https://doi.org/10.24432/C56S3T.
+
+----
+
+Both the ridge and lasso models calculate the mean absolute deviation as part of the CV training process (see prior images). The ridge model had a MAD of 58.3% and the lasso had a MAD of 57.1%; both methods perform better than the multiple regression, support vector machine, and neural network models of the paper!
+
